@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
+import { API } from "../service/ipConfig";
 
 const Login = () => {
   const navigate = useNavigate();
@@ -16,18 +17,14 @@ const Login = () => {
     setLoading(true);
 
     try {
-      const response = await axios.post(
-        "https://localhost:44307/api/auth/login",
-        {
-          Email: email,
-          Password: password,
-        }
-      );
+      const response = await axios.post(API.auth.login, {
+        Email: email,
+        Password: password,
+      });
 
       if (response.data.success) {
         // Save user info to localStorage
         localStorage.setItem("user", JSON.stringify(response.data.user));
-
         navigate("/home");
       } else {
         setError(response.data.message);
@@ -47,13 +44,9 @@ const Login = () => {
           Song Medley Maker & DJ
         </h1>
 
-        <p className="text-center text-gray-500 mb-6">
-          Login to continue
-        </p>
+        <p className="text-center text-gray-500 mb-6">Login to continue</p>
 
-        {error && (
-          <p className="text-red-500 text-center mb-4">{error}</p>
-        )}
+        {error && <p className="text-red-500 text-center mb-4">{error}</p>}
 
         <form onSubmit={handleLogin}>
           <input

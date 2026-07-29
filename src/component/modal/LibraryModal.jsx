@@ -4,6 +4,7 @@ import SongList from "../SongList";
 const LibraryModal = ({ isOpen, onClose, onSelectSong }) => {
   const [search, setSearch] = useState("");
   const [favourites, setFavourites] = useState([]);
+  const [audioBustToken, setAudioBustToken] = useState(Date.now());
 
   useEffect(() => {
     const saved = JSON.parse(localStorage.getItem("favourites") || "[]");
@@ -24,6 +25,14 @@ const LibraryModal = ({ isOpen, onClose, onSelectSong }) => {
     setFavourites(updated);
     localStorage.setItem("favourites", JSON.stringify(updated));
   };
+  // Adds a cache-busting query param so the browser doesn't play a
+// stale copy after the backend re-renders the mashup file.
+const buildAudioUrl = (path) => {
+  if (!path) return "";
+  const base = buildFileUrl(path);
+  const sep = base.includes("?") ? "&" : "?";
+  return `${base}${sep}v=${audioBustToken}`;
+};
 
   if (!isOpen) return null;
 

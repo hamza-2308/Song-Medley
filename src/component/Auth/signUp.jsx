@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
+import { API } from "../service/ipConfig";
 
 const Signup = () => {
   const navigate = useNavigate();
@@ -20,15 +21,12 @@ const Signup = () => {
     setLoading(true);
 
     try {
-      const response = await axios.post(
-        "https://localhost:44307/api/auth/register",
-        {
-          UserName: form.name,
-          Email: form.email,
-          Password: form.password,
-          Role: form.role,
-        }
-      );
+      const response = await axios.post(API.auth.register, {
+        UserName: form.name,
+        Email: form.email,
+        Password: form.password,
+        Role: form.role,
+      });
 
       if (response.data.success) {
         alert("Account created successfully!");
@@ -47,17 +45,11 @@ const Signup = () => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-r from-black via-purple-900 to-black">
       <div className="bg-white p-8 rounded-2xl shadow-2xl w-96">
-        <h1 className="text-3xl font-bold text-center mb-2">
-          Create Account
-        </h1>
+        <h1 className="text-3xl font-bold text-center mb-2">Create Account</h1>
 
-        <p className="text-center text-gray-500 mb-6">
-          Signup to continue
-        </p>
+        <p className="text-center text-gray-500 mb-6">Signup to continue</p>
 
-        {error && (
-          <p className="text-red-500 text-center mb-4">{error}</p>
-        )}
+        {error && <p className="text-red-500 text-center mb-4">{error}</p>}
 
         <form onSubmit={handleSignup}>
           <input
@@ -109,10 +101,7 @@ const Signup = () => {
 
         <p className="text-center mt-4">
           Already have an account?{" "}
-          <Link
-            to="/"
-            className="text-purple-700 font-semibold hover:underline"
-          >
+          <Link to="/" className="text-purple-700 font-semibold hover:underline">
             Login
           </Link>
         </p>

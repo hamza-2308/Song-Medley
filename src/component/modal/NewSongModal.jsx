@@ -1,5 +1,6 @@
 import { useState } from "react";
 import axios from "axios";
+import { API } from "../service/ipConfig";
 
 const AddNewSongModal = ({ isOpen, onClose, onSongUploaded }) => {
   const [songTitle, setSongTitle] = useState("");
@@ -18,14 +19,12 @@ const AddNewSongModal = ({ isOpen, onClose, onSongUploaded }) => {
       setError("Song Title is required");
       return;
     }
-
     if (!artistName.trim()) {
       setError("Artist Name is required");
       return;
     }
-
     if (!file) {
-      setError("Please select an MP3 file");
+      setError("Please select an audio file");
       return;
     }
 
@@ -33,6 +32,9 @@ const AddNewSongModal = ({ isOpen, onClose, onSongUploaded }) => {
     setUploading(true);
 
     try {
+      // Backend endpoint: POST /api/songs/add (multipart/form-data).
+      // Backend reads SongTitle, ArtistName, MovieName, ThemeName as form
+      // fields, and expects the audio file as the first file part.
       const formData = new FormData();
       formData.append("SongTitle", songTitle.trim());
       formData.append("ArtistName", artistName.trim());
@@ -40,20 +42,13 @@ const AddNewSongModal = ({ isOpen, onClose, onSongUploaded }) => {
       formData.append("ThemeName", themeName.trim());
       formData.append("file", file);
 
-      const response = await axios.post(
-        "https://localhost:44307/api/songs/upload",
-        formData,
-        {
-          headers: { "Content-Type": "multipart/form-data" },
-        }
-      );
+      const response = await axios.post(API.songs.upload, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
 
       if (response.data.success) {
         alert("Song Uploaded Successfully!");
-
-        if (onSongUploaded) {
-          onSongUploaded(response.data.filePath);
-        }
+        if (onSongUploaded) onSongUploaded(response.data.filePath);
 
         setSongTitle("");
         setArtistName("");
@@ -63,8 +58,7 @@ const AddNewSongModal = ({ isOpen, onClose, onSongUploaded }) => {
 
         onClose();
       } else {
-        // Backend se "already exists" jese messages yahan aayenge
-        setError(response.data.message);
+        setError(response.data.message || "Upload failed");
       }
     } catch (err) {
       console.error(err);
@@ -107,7 +101,7 @@ const AddNewSongModal = ({ isOpen, onClose, onSongUploaded }) => {
 
         <input
           type="text"
-          placeholder="Theme"
+          placeholder="Theme (e.g. sad, happy, party)"
           value={themeName}
           onChange={(e) => setThemeName(e.target.value)}
           className="w-full border p-3 rounded-lg mb-3"
@@ -115,7 +109,7 @@ const AddNewSongModal = ({ isOpen, onClose, onSongUploaded }) => {
 
         <input
           type="file"
-          accept="audio/mp3,audio/mpeg"
+          accept="audio/*,.mp3,.wav,.aac,.m4a,.ogg"
           onChange={(e) => setFile(e.target.files[0])}
           className="w-full border p-3 rounded-lg mb-4"
         />

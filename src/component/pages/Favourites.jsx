@@ -1,10 +1,13 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
-
-const BASE_URL = "https://localhost:44307";
-
-const getCurrentUser = () => JSON.parse(localStorage.getItem("user") || "{}");
+import { API, buildFileUrl } from "../service/ipConfig";
+import {
+  getFavouriteSongIds,
+  getFavouriteMedleyIds,
+  toggleFavouriteSong,
+  toggleFavouriteMedley,
+} from "../service/favouritesStorage";
 
 const Favourites = () => {
   const navigate = useNavigate();
@@ -13,20 +16,25 @@ const Favourites = () => {
   const [loading, setLoading] = useState(true);
   const [currentlyPlaying, setCurrentlyPlaying] = useState(null);
 
+  // Favourites are stored as just an array of IDs in localStorage.
+  // We fetch the full song/medley lists and filter down to the
+  // favourited IDs — no dedicated backend endpoint required.
   const fetchFavourites = async () => {
-    const user = getCurrentUser();
-    if (!user.UserId) {
-      setLoading(false);
-      return;
-    }
     setLoading(true);
     try {
+      const favSongIds = getFavouriteSongIds();
+      const favMedleyIds = getFavouriteMedleyIds();
+
       const [songsRes, medleysRes] = await Promise.all([
-        axios.get(`${BASE_URL}/api/favorites/songs/${user.UserId}`),
-        axios.get(`${BASE_URL}/api/favorites/medleys/${user.UserId}`)
+        favSongIds.length > 0 ? axios.get(API.songs.all) : Promise.resolve({ data: [] }),
+        favMedleyIds.length > 0 ? axios.get(API.medleys.all) : Promise.resolve({ data: [] }),
       ]);
-      setFavSongs(songsRes.data || []);
-      setFavMedleys(medleysRes.data || []);
+
+      const allSongs = songsRes.data || [];
+      const allMedleys = medleysRes.data || [];
+
+      setFavSongs(allSongs.filter((s) => favSongIds.includes(s.SongId)));
+      setFavMedleys(allMedleys.filter((m) => favMedleyIds.includes(m.MedleyId)));
     } catch (err) {
       console.error("Failed to load favourites:", err);
     } finally {
@@ -38,28 +46,16 @@ const Favourites = () => {
     fetchFavourites();
   }, []);
 
-  const removeFavouriteSong = async (songId) => {
-    const user = getCurrentUser();
-    try {
-      await axios.delete(`${BASE_URL}/api/favorites/remove`, {
-        params: { userId: user.UserId, itemType: "Song", itemId: songId }
-      });
-      setFavSongs((prev) => prev.filter((s) => s.SongId !== songId));
-    } catch (err) {
-      console.error("Remove favourite failed:", err);
-    }
+  const removeFavouriteSong = (songId) => {
+    toggleFavouriteSong(songId);
+    setFavSongs((prev) => prev.filter((s) => s.SongId !== songId));
+    if (currentlyPlaying === `song-${songId}`) setCurrentlyPlaying(null);
   };
 
-  const removeFavouriteMedley = async (medleyId) => {
-    const user = getCurrentUser();
-    try {
-      await axios.delete(`${BASE_URL}/api/favorites/remove`, {
-        params: { userId: user.UserId, itemType: "Medley", itemId: medleyId }
-      });
-      setFavMedleys((prev) => prev.filter((m) => m.MedleyId !== medleyId));
-    } catch (err) {
-      console.error("Remove favourite failed:", err);
-    }
+  const removeFavouriteMedley = (medleyId) => {
+    toggleFavouriteMedley(medleyId);
+    setFavMedleys((prev) => prev.filter((m) => m.MedleyId !== medleyId));
+    if (currentlyPlaying === `medley-${medleyId}`) setCurrentlyPlaying(null);
   };
 
   return (
@@ -83,7 +79,7 @@ const Favourites = () => {
           <p className="text-5xl mb-4">🤍</p>
           <p className="text-gray-400">No favourites yet.</p>
           <p className="text-gray-500 text-sm mt-1">
-            Add songs or medleys from Library by tapping ❤️
+            Add songs or medleys by tapping the heart icon
           </p>
         </div>
       ) : (
@@ -94,10 +90,7 @@ const Favourites = () => {
               <h2 className="text-lg font-bold mb-3">🎵 Songs</h2>
               <div className="space-y-3">
                 {favSongs.map((song) => (
-                  <div
-                    key={song.SongId}
-                    className="bg-gray-800 rounded-xl p-4"
-                  >
+                  <div key={song.SongId} className="bg-gray-800 rounded-xl p-4">
                     <div className="flex justify-between items-center">
                       <div>
                         <p className="font-semibold">{song.SongTitle}</p>
@@ -111,7 +104,9 @@ const Favourites = () => {
                         <button
                           onClick={() =>
                             setCurrentlyPlaying(
-                              currentlyPlaying === `song-${song.SongId}` ? null : `song-${song.SongId}`
+                              currentlyPlaying === `song-${song.SongId}`
+                                ? null
+                                : `song-${song.SongId}`
                             )
                           }
                           className="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded-lg text-sm"
@@ -122,6 +117,7 @@ const Favourites = () => {
                         <button
                           onClick={() => removeFavouriteSong(song.SongId)}
                           className="text-red-400 hover:text-red-300 text-xl"
+                          title="Remove from favourites"
                         >
                           ❤️
                         </button>
@@ -131,7 +127,7 @@ const Favourites = () => {
                     {currentlyPlaying === `song-${song.SongId}` && (
                       <audio
                         className="w-full mt-3"
-                        src={`${BASE_URL}/api/songs/stream/${song.SongId}`}
+                        src={buildFileUrl(song.FilePath)}
                         controls
                         autoPlay
                         onEnded={() => setCurrentlyPlaying(null)}
@@ -149,10 +145,7 @@ const Favourites = () => {
               <h2 className="text-lg font-bold mb-3">🎧 Medleys</h2>
               <div className="space-y-3">
                 {favMedleys.map((medley) => (
-                  <div
-                    key={medley.MedleyId}
-                    className="bg-gray-800 rounded-xl p-4"
-                  >
+                  <div key={medley.MedleyId} className="bg-gray-800 rounded-xl p-4">
                     <div className="flex justify-between items-center">
                       <div>
                         <p className="font-semibold">{medley.MedleyName}</p>
@@ -166,7 +159,9 @@ const Favourites = () => {
                           <button
                             onClick={() =>
                               setCurrentlyPlaying(
-                                currentlyPlaying === `medley-${medley.MedleyId}` ? null : `medley-${medley.MedleyId}`
+                                currentlyPlaying === `medley-${medley.MedleyId}`
+                                  ? null
+                                  : `medley-${medley.MedleyId}`
                               )
                             }
                             className="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded-lg text-sm"
@@ -178,6 +173,7 @@ const Favourites = () => {
                         <button
                           onClick={() => removeFavouriteMedley(medley.MedleyId)}
                           className="text-red-400 hover:text-red-300 text-xl"
+                          title="Remove from favourites"
                         >
                           ❤️
                         </button>
@@ -187,7 +183,7 @@ const Favourites = () => {
                     {currentlyPlaying === `medley-${medley.MedleyId}` && (
                       <audio
                         className="w-full mt-3"
-                        src={`${BASE_URL}/api/medley/download/${medley.MedleyId}`}
+                        src={buildFileUrl(medley.OutputFilePath)}
                         controls
                         autoPlay
                         onEnded={() => setCurrentlyPlaying(null)}

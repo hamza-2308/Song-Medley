@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.esm.js";
+import { API, buildFileUrl } from "../service/ipConfig";
 
 const SongTrimmerModal = ({ isOpen, onClose, song, onTrimSaved }) => {
   const waveformRef = useRef(null);
@@ -15,8 +16,6 @@ const SongTrimmerModal = ({ isOpen, onClose, song, onTrimSaved }) => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-
-  const BASE_URL = "https://localhost:44307";
 
   useEffect(() => {
     if (!isOpen || !song || !waveformRef.current) return;
@@ -45,7 +44,9 @@ const SongTrimmerModal = ({ isOpen, onClose, song, onTrimSaved }) => {
       plugins: [regionsPlugin.current],
     });
 
-    wavesurfer.current.load(`${BASE_URL}/api/songs/stream/${song.SongId}`);
+    // Backend has no /api/songs/stream/{id} endpoint — the mp3 is served
+    // as a static file at song.FilePath (e.g. "/Uploads/xyz.mp3").
+    wavesurfer.current.load(buildFileUrl(song.FilePath));
 
     wavesurfer.current.on("ready", () => {
       const dur = wavesurfer.current.getDuration();
@@ -115,72 +116,80 @@ const SongTrimmerModal = ({ isOpen, onClose, song, onTrimSaved }) => {
   };
 
   const handleSaveTrim = async () => {
-  if (!clipName.trim()) {
-    setError("Clip name is required");
-    return;
-  }
-  if (startMs >= endMs) {
-    setError("End time must be greater than Start time");
-    return;
-  }
-  if (endMs - startMs < 1000) {
-    setError("Clip must be at least 1 second long");
-    return;
-  }
-
-  const user = JSON.parse(localStorage.getItem("user") || "{}");
-  if (!user.UserId) {
-    setError("You must be logged in to save a clip");
-    return;
-  }
-
-  setError("");
-  setSaving(true);
-
-  try {
-    const response = await fetch(
-      `${BASE_URL}/api/trimclips/create?songId=${song.SongId}&startMs=${startMs}&endMs=${endMs}&clipName=${encodeURIComponent(clipName.trim())}&userId=${user.UserId}`,
-      { method: "POST" }
-    );
-
-    if (!response.ok) {
-      // 404 / 400 etc. — try to read a message, fall back to a generic one
-      let message = "Failed to save clip";
-      try {
-        const errData = await response.json();
-        message = errData.message || errData.Message || message;
-      } catch {
-        // response wasn't JSON (e.g. plain 404 page) — keep generic message
-      }
-      setError(message);
+    if (!clipName.trim()) {
+      setError("Clip name is required");
+      return;
+    }
+    if (startMs >= endMs) {
+      setError("End time must be greater than Start time");
+      return;
+    }
+    if (endMs - startMs < 1000) {
+      setError("Clip must be at least 1 second long");
       return;
     }
 
-    const data = await response.json();
-
-    if (data.success) {
-      if (onTrimSaved) onTrimSaved({
-        trimClipId: data.trimClipId,
-        clipName: clipName.trim(),
-        startMs,
-        endMs,
-        songId: song.SongId,
-        songTitle: song.SongTitle,
-        artistName: song.ArtistName,
-        filePath: data.filePath
-      });
-      setClipName("");
-      setError("");
-    } else {
-      setError(data.message || "Failed to save clip");
+    const user = JSON.parse(localStorage.getItem("user") || "{}");
+    if (!user.UserId) {
+      setError("You must be logged in to save a clip");
+      return;
     }
-  } catch (err) {
-    console.error(err);
-    setError("Something went wrong.");
-  } finally {
-    setSaving(false);
-  }
-};
+
+    setError("");
+    setSaving(true);
+
+    try {
+      // Backend expects query-string params, not JSON body:
+      //   POST /api/trimclips/create?songId=&userId=&startMs=&endMs=&clipName=
+      const params = new URLSearchParams({
+        songId: song.SongId,
+        userId: user.UserId,
+        startMs: String(startMs),
+        endMs: String(endMs),
+        clipName: clipName.trim(),
+      });
+      const url = `${API.trimClips.create}?${params.toString()}`;
+
+      const response = await fetch(url, { method: "POST" });
+
+      if (!response.ok) {
+        let message = "Failed to save clip";
+        try {
+          const errData = await response.json();
+          message = errData.message || errData.Message || message;
+        } catch {
+          // response wasn't JSON — keep generic message
+        }
+        setError(message);
+        return;
+      }
+
+      const data = await response.json();
+
+      if (data.success) {
+        if (onTrimSaved)
+          onTrimSaved({
+            trimClipId: data.trimClipId,
+            clipName: clipName.trim(),
+            startMs,
+            endMs,
+            songId: song.SongId,
+            songTitle: song.SongTitle,
+            artistName: song.ArtistName,
+            filePath: data.file, // backend returns { file: "/Uploads/Clips/clip_xxx.mp3" }
+          });
+        setClipName("");
+        setError("");
+      } else {
+        setError(data.message || "Failed to save clip");
+      }
+    } catch (err) {
+      console.error(err);
+      setError("Something went wrong.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 bg-black/90 flex justify-center items-center z-50">
@@ -271,7 +280,6 @@ const SongTrimmerModal = ({ isOpen, onClose, song, onTrimSaved }) => {
 
         {error && <p className="text-red-400 mb-3 text-sm">{error}</p>}
 
-        {/* Save Button — modal band nahi hoga, clip save hoke list mein add hogi */}
         <button
           onClick={handleSaveTrim}
           disabled={saving || loading}
@@ -280,7 +288,6 @@ const SongTrimmerModal = ({ isOpen, onClose, song, onTrimSaved }) => {
           {saving ? "Saving..." : "✂️ Trim & Add to Queue"}
         </button>
 
-        {/* Note */}
         <p className="text-gray-500 text-xs text-center mt-2">
           You can add multiple clips from this song before closing
         </p>

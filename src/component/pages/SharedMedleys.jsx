@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import axios from "axios";
-
-const BASE_URL = "https://localhost:44307";
+import { API, buildFileUrl } from "../service/ipConfig";
 
 const SharedMedleys = () => {
   const [sharedList, setSharedList] = useState([]);
@@ -26,7 +25,8 @@ const SharedMedleys = () => {
 
     setLoadingList(true);
     try {
-      const res = await axios.get(`${BASE_URL}/api/medley/shared-with-me/${user.UserId}`);
+      // Backend: GET /api/medleyshare/sharedwith/{userId}
+      const res = await axios.get(API.medleyShare.sharedWithUser(user.UserId));
       setSharedList(res.data || []);
     } catch (err) {
       console.error("Failed to load shared medleys:", err);
@@ -39,6 +39,7 @@ const SharedMedleys = () => {
     fetchSharedList();
   }, []);
 
+  // Client-composed medley detail (no /api/medley/edit endpoint on backend).
   const openMedley = async (medleyId) => {
     const user = getCurrentUser();
     setOpenMedleyId(medleyId);
@@ -48,13 +49,17 @@ const SharedMedleys = () => {
     setLoadingDetail(true);
 
     try {
-      const res = await axios.get(`${BASE_URL}/api/medley/edit/${medleyId}/${user.UserId}`);
-      if (res.data.success) {
-        setMedleyDetail(res.data);
-        setCanEdit(res.data.canEdit);
-      } else {
-        setSaveError(res.data.message || "Could not load medley");
-      }
+      const [medRes, clipsRes] = await Promise.all([
+        axios.get(API.medleys.byId(medleyId)),
+        axios.get(API.medleyClips.byMedley(medleyId)),
+      ]);
+
+      const medley = medRes.data;
+      const clips = clipsRes.data || [];
+      const canEditFlag = user.UserId && medley?.UserId === user.UserId;
+
+      setMedleyDetail({ success: true, medley, clips, canEdit: canEditFlag });
+      setCanEdit(canEditFlag);
     } catch (err) {
       console.error("Failed to load medley detail:", err);
       setSaveError("Failed to load medley");
@@ -70,15 +75,12 @@ const SharedMedleys = () => {
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   };
 
-  // ==========================
-  // Drag & drop reordering (native HTML5 DnD — no extra library needed)
-  // ==========================
   const handleDragStart = (index) => {
     dragIndexRef.current = index;
   };
 
   const handleDragOver = (e) => {
-    e.preventDefault(); // required to allow dropping
+    e.preventDefault();
   };
 
   const handleDrop = (dropIndex) => {
@@ -96,32 +98,40 @@ const SharedMedleys = () => {
   const handleSaveOrder = async () => {
     if (!medleyDetail) return;
 
-    const user = getCurrentUser();
     setSaving(true);
     setSaveMsg("");
     setSaveError("");
 
-    const clipOrder = medleyDetail.clips.map((clip, index) => ({
-      TrimClipId: clip.TrimClipId,
-      SequenceNumber: index + 1
-    }));
-
     try {
-      const response = await axios.put(`${BASE_URL}/api/medley/${openMedleyId}/reorder`, {
-        UserId: user.UserId,
-        ClipOrder: clipOrder
-      });
-
-      if (response.data.success) {
-        setSaveMsg(response.data.message || "Order saved");
-        if (response.data.renderError) {
-          setSaveError(`Mashup re-render failed: ${response.data.renderError}`);
-        }
-        // refresh detail to get the new mashup URL / sequence numbers
-        openMedley(openMedleyId);
-      } else {
-        setSaveError(response.data.message || "Failed to save order");
+      // Update SequenceNumber for every clip.
+      for (let i = 0; i < medleyDetail.clips.length; i++) {
+        const clip = medleyDetail.clips[i];
+        await axios.put(API.medleyClips.update(clip.MedleyClipId), {
+          MedleyClipId: clip.MedleyClipId,
+          MedleyId: openMedleyId,
+          TrimClipId: clip.TrimClipId,
+          SequenceNumber: i + 1,
+        });
       }
+
+      // Re-render the mashup.
+      let renderError = null;
+      try {
+        const mergeRes = await axios.post(API.medleys.merge(openMedleyId));
+        if (!mergeRes.data.success) {
+          renderError = mergeRes.data.message || "Merge failed";
+        }
+      } catch (mergeErr) {
+        renderError =
+          mergeErr.response?.data?.Message ||
+          mergeErr.response?.data?.message ||
+          mergeErr.message;
+      }
+
+      setSaveMsg("Order saved");
+      if (renderError) setSaveError(`Mashup re-render failed: ${renderError}`);
+
+      openMedley(openMedleyId);
     } catch (err) {
       console.error("Save order error:", err);
       const serverMessage = err.response?.data?.Message || err.response?.data?.message;
@@ -164,7 +174,6 @@ const SharedMedleys = () => {
         </div>
       )}
 
-      {/* Editor panel for the opened medley */}
       {openMedleyId && (
         <div className="bg-gray-900 border border-gray-700 rounded-xl p-4">
           {loadingDetail ? (
@@ -185,7 +194,7 @@ const SharedMedleys = () => {
               {medleyDetail.medley.OutputFilePath && (
                 <audio
                   controls
-                  src={`${BASE_URL}/api/medley/download/${openMedleyId}`}
+                  src={buildAudioUrl(medleyDetail.medley.OutputFilePath)}
                   className="w-full mb-3"
                 />
               )}
@@ -193,7 +202,7 @@ const SharedMedleys = () => {
               <p className="text-gray-500 text-xs mb-2">
                 {canEdit
                   ? "Drag clips up/down to change the mashup order"
-                  : "Only the owner or someone this was shared with can reorder clips"}
+                  : "Only the owner can reorder clips"}
               </p>
 
               <div className="space-y-2 mb-3">
@@ -212,9 +221,9 @@ const SharedMedleys = () => {
                       {index + 1}
                     </div>
                     <div className="flex-1">
-                      <p className="text-sm font-semibold">{clip.ClipName}</p>
+                      <p className="text-sm font-semibold">TrimClip #{clip.TrimClipId}</p>
                       <p className="text-gray-400 text-xs">
-                        {formatMs(clip.StartMs)} → {formatMs(clip.EndMs)} · 🎵 {clip.SongTitle}
+                        Sequence: {clip.SequenceNumber}
                       </p>
                     </div>
                     {canEdit && <span className="text-gray-500 text-lg">⠿</span>}
