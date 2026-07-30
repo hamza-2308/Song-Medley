@@ -4,7 +4,7 @@ import axios from "axios";
 import SongTrimmerModal from "../modal/SongTrimmerModal";
 import AddNewSongModal from "../modal/NewSongModal";
 import { API, buildFileUrl } from "../service/ipConfig";
-import ConfirmModal from "./ConfirmModal"; // ← NEW IMPORT
+import ConfirmModal from "../pages/Confirmmodal"; // ← NEW IMPORT
 
 // Fixed watermark clip — always the same TrimClipId, always locked at sequence 1
 const WATERMARK_TRIM_CLIP_ID = 1047;

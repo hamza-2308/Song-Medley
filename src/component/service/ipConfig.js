@@ -151,6 +151,7 @@ export const API = {
       `${BASE_URL}/api/suggested/accept/${originalMedleyId}?userId=${userId}`,
     updateSettings: (id) => `${BASE_URL}/api/suggested/settings/${id}`,
     received: (shopkeeperUserId) => `${BASE_URL}/api/suggested/received/${shopkeeperUserId}`,
+    addClip: `${BASE_URL}/api/suggested/clip/add`,
 },
 
 // reviews and rating 

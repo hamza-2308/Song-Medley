@@ -5,6 +5,7 @@ import ClipReTrimModal from "../modal/ClipReTrimModal";
 import RequestMedleyModal from "../modal/RequestMedleyModal";
 import ConfirmModal from "../pages/Confirmmodal";
 import { getFavouriteMedleyIds, toggleFavouriteMedley } from "../service/favouritesStorage";
+import EditMedleyModal from "../modal/EditMedleyModal";
 
 const MyLibrary = () => {
   const getCurrentUser = () => JSON.parse(localStorage.getItem("user") || "{}");
@@ -98,11 +99,14 @@ const MyLibrary = () => {
   const [showShopKeeperPicker, setShowShopKeeperPicker] = useState(false);
   const [requestSuccessMsg, setRequestSuccessMsg] = useState("");
 
-  // Edit modal
+  // Edit modal (rename / basic details)
   const [editMedley, setEditMedley] = useState(null);
   const [editForm, setEditForm] = useState({ MedleyName: "", ComposerName: "", ThemeId: "" });
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState("");
+
+  // Edit modal (clip management — reorder / add / re-trim)
+  const [clipsEditMedley, setClipsEditMedley] = useState(null);
 
   // Delete confirmation
   const [deletingId, setDeletingId] = useState(null);
@@ -120,19 +124,32 @@ const MyLibrary = () => {
   const [shareSuccessMsg, setShareSuccessMsg] = useState("");
   const [shareProgressMsg, setShareProgressMsg] = useState("");
 
+  // ==========================
   // Watermark-on-share
+  // ==========================
+  // Placement modes (shared with the Repeat-clip block):
+  //   "start"      → before the first clip                  → positions "0"
+  //   "middle"     → in the middle of the clip list          → positions "N"
+  //   "end"        → after the last clip                     → positions "-1"
+  //   "start_end"  → both start AND end                      → positions "0,-1"
+  //   "every_clip" → repeats (every clip, or every N clips)   → RepeatEvery
+  //   "custom"     → free text, e.g. "start, 2, 5, end"       → positions "0,2,5,-1"
   const [shareWatermarks, setShareWatermarks] = useState([]);
   const [addWatermarkOnShare, setAddWatermarkOnShare] = useState(false);
   const [selectedShareWatermarkId, setSelectedShareWatermarkId] = useState(null);
-  const [watermarkRepeatMode, setWatermarkRepeatMode] = useState("first_only");
+  const [watermarkRepeatMode, setWatermarkRepeatMode] = useState("start");
+  const [everyNClipsMode, setEveryNClipsMode] = useState(false);
   const [watermarkRepeatN, setWatermarkRepeatN] = useState(2);
   const [lockFirstWatermark, setLockFirstWatermark] = useState(true);
+  const [watermarkCustomText, setWatermarkCustomText] = useState("");
 
-  // Repeat Clip (Share modal)
+  // Repeat Clip (Share modal) — same placement vocabulary as the watermark
   const [shareMedleyClips, setShareMedleyClips] = useState([]);
   const [shareRepeatClipTrimId, setShareRepeatClipTrimId] = useState("");
   const [shareRepeatClipMode, setShareRepeatClipMode] = useState("no_repeat");
   const [shareRepeatClipN, setShareRepeatClipN] = useState(2);
+  const [shareRepeatClipEveryN, setShareRepeatClipEveryN] = useState(false);
+  const [shareRepeatClipCustomText, setShareRepeatClipCustomText] = useState("");
 
   // Shared With You
   const [sharedList, setSharedList] = useState([]);
@@ -155,6 +172,14 @@ const MyLibrary = () => {
   const [sugRepeatClipN, setSugRepeatClipN] = useState(2);
   const [retrimTrimClipId, setRetrimTrimClipId] = useState(null);
 
+  // Suggested Sequences — add new clip from TrimClips library
+  const [showSugLibrary, setShowSugLibrary] = useState(false);
+  const [sugLibraryClips, setSugLibraryClips] = useState([]);
+  const [loadingSugLibrary, setLoadingSugLibrary] = useState(false);
+  const [sugLibraryError, setSugLibraryError] = useState("");
+  const [sugLibrarySearch, setSugLibrarySearch] = useState("");
+  const [addingSugClipId, setAddingSugClipId] = useState(null);
+
   // Suggestions Inbox
   const [receivedSuggestions, setReceivedSuggestions] = useState([]);
   const [loadingReceived, setLoadingReceived] = useState(false);
@@ -166,16 +191,16 @@ const MyLibrary = () => {
   const [receivedError, setReceivedError] = useState("");
 
   // ==========================
-// RECEIVED MEDLEY REQUESTS (ShopKeeper inbox)
-// ==========================
-const [receivedRequests, setReceivedRequests] = useState([]);
-const [loadingReceivedRequests, setLoadingReceivedRequests] = useState(false);
-const [pendingRequestCount, setPendingRequestCount] = useState(0);
+  // RECEIVED MEDLEY REQUESTS (ShopKeeper inbox)
+  // ==========================
+  const [receivedRequests, setReceivedRequests] = useState([]);
+  const [loadingReceivedRequests, setLoadingReceivedRequests] = useState(false);
+  const [pendingRequestCount, setPendingRequestCount] = useState(0);
 
-const [respondingRequest, setRespondingRequest] = useState(null);
-const [responseStatus, setResponseStatus] = useState("Accepted");
-const [responseText, setResponseText] = useState("");
-const [submittingResponse, setSubmittingResponse] = useState(false);
+  const [respondingRequest, setRespondingRequest] = useState(null);
+  const [responseStatus, setResponseStatus] = useState("Accepted");
+  const [responseText, setResponseText] = useState("");
+  const [submittingResponse, setSubmittingResponse] = useState(false);
 
   // ==========================
   // REVIEWS / RATINGS state
@@ -219,18 +244,140 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
     if (!fileName) return "";
     return fileName.includes("_") ? fileName.substring(fileName.indexOf("_") + 1) : fileName;
   };
-  const computeWatermarkPlacement = () => {
-    let repeatEvery = 0;
-    let lockFirst = true;
-    if (watermarkRepeatMode === "first_only") { repeatEvery = 0; lockFirst = true; }
-    else if (watermarkRepeatMode === "every_clip") { repeatEvery = 1; lockFirst = lockFirstWatermark; }
-    else if (watermarkRepeatMode === "every_n_clips") {
-      repeatEvery = Math.max(2, parseInt(watermarkRepeatN, 10) || 2);
-      lockFirst = lockFirstWatermark;
+
+  // ==========================
+  // Download a finished medley file
+  // ==========================
+  const [downloadingKey, setDownloadingKey] = useState(null);
+  const handleDownloadFile = async (filePath, suggestedName, key) => {
+    if (!filePath) return;
+    setDownloadingKey(key);
+    try {
+      const url = buildFileUrl(filePath);
+      const res = await axios.get(url, { responseType: "blob" });
+      const blobUrl = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      const fallbackName = filePath.split("/").pop() || "medley.mp3";
+      link.setAttribute("download", suggestedName ? `${suggestedName}.mp3` : fallbackName);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      alert("Download failed. Please try again.");
+    } finally {
+      setDownloadingKey(null);
     }
-    return { repeatEvery, lockFirst };
   };
-  const computeRepeatClip = (mode, n, trimId) => {
+
+  // ==========================
+  // PLACEMENT POSITIONS
+  //  0 = before the first clip (start)
+  //  N = after clip number N
+  // -1 = after the last clip (end)
+  // Stored on the medley as a comma-separated string, e.g. "0,-1"
+  // ==========================
+  const parsePositionsInput = (raw, clipCount) => {
+    const tokens = String(raw || "").split(/[,\s;]+/).filter(Boolean);
+    const out = [];
+    tokens.forEach((t) => {
+      const low = t.toLowerCase();
+      if (low === "start" || low === "s" || low === "first") { out.push(0); return; }
+      if (low === "end" || low === "e" || low === "last") { out.push(-1); return; }
+      const n = parseInt(low, 10);
+      if (!Number.isFinite(n)) return;
+      if (n === 0) { out.push(0); return; }
+      if (n < 0) { out.push(-1); return; }
+      // "after the last clip" is the same thing as "end"
+      out.push(clipCount > 0 && n >= clipCount ? -1 : n);
+    });
+    return out.filter((v, i) => out.indexOf(v) === i);
+  };
+
+  const serializePositions = (arr) => (arr && arr.length ? arr.join(",") : null);
+
+  const describePositions = (positions, repeatEvery, lockFirst) => {
+    if (repeatEvery === 1) return lockFirst ? "at the start and after every clip" : "after every clip";
+    if (repeatEvery > 1) return lockFirst ? `at the start and every ${repeatEvery} clips` : `every ${repeatEvery} clips`;
+    if (!positions || positions.length === 0) return "at the start";
+    return positions
+      .map((p) => (p === 0 ? "at the start" : p === -1 ? "at the end" : `after clip ${p}`))
+      .join(" and ");
+  };
+
+  // Turn a UI mode into { positions[], repeatEvery }
+  const positionsForMode = ({ mode, customText, clipCount, everyN, nValue }) => {
+    if (mode === "start") return { positions: [0], repeatEvery: 0 };
+    if (mode === "middle") {
+      const mid = clipCount > 1 ? Math.floor(clipCount / 2) : 0;
+      return { positions: [mid], repeatEvery: 0 };
+    }
+    if (mode === "end") return { positions: [-1], repeatEvery: 0 };
+    if (mode === "start_end") return { positions: [0, -1], repeatEvery: 0 };
+    if (mode === "every_clip") {
+      return { positions: [], repeatEvery: everyN ? Math.max(2, parseInt(nValue, 10) || 2) : 1 };
+    }
+    if (mode === "custom") {
+      return { positions: parsePositionsInput(customText, clipCount), repeatEvery: 0 };
+    }
+    return { positions: [], repeatEvery: 0 };
+  };
+
+  // Rebuild a UI mode from what is stored on the medley
+  const modeFromStored = (positionsRaw, repeatEvery, clipCount) => {
+    if (repeatEvery && repeatEvery >= 1) {
+      return { mode: "every_clip", everyN: repeatEvery >= 2, nValue: repeatEvery >= 2 ? repeatEvery : 2, customText: "" };
+    }
+    const arr = parsePositionsInput(positionsRaw, clipCount);
+    if (arr.length === 0) return { mode: "start", everyN: false, nValue: 2, customText: "" };
+    if (arr.length === 1 && arr[0] === 0) return { mode: "start", everyN: false, nValue: 2, customText: "" };
+    if (arr.length === 1 && arr[0] === -1) return { mode: "end", everyN: false, nValue: 2, customText: "" };
+    if (arr.length === 2 && arr.includes(0) && arr.includes(-1)) {
+      return { mode: "start_end", everyN: false, nValue: 2, customText: "" };
+    }
+    const text = arr.map((p) => (p === 0 ? "start" : p === -1 ? "end" : String(p))).join(", ");
+    return { mode: "custom", everyN: false, nValue: 2, customText: text };
+  };
+
+  const clipCountForShare = () => shareMedleyClips.length || shareMedleyObj?.ClipCount || 0;
+
+  const computeWatermarkPlacement = () => {
+    const { positions, repeatEvery } = positionsForMode({
+      mode: watermarkRepeatMode,
+      customText: watermarkCustomText,
+      clipCount: clipCountForShare(),
+      everyN: everyNClipsMode,
+      nValue: watermarkRepeatN,
+    });
+    const lockFirst = repeatEvery > 0 ? lockFirstWatermark : false;
+    return { positions, repeatEvery, lockFirst };
+  };
+
+  const computeShareRepeatClip = () => {
+    if (shareRepeatClipMode === "no_repeat" || !shareRepeatClipTrimId) {
+      return { repeatClipTrimId: null, repeatClipEvery: 0, repeatClipPositions: [] };
+    }
+    const { positions, repeatEvery } = positionsForMode({
+      mode: shareRepeatClipMode,
+      customText: shareRepeatClipCustomText,
+      clipCount: clipCountForShare(),
+      everyN: shareRepeatClipEveryN,
+      nValue: shareRepeatClipN,
+    });
+    if (repeatEvery === 0 && positions.length === 0) {
+      return { repeatClipTrimId: null, repeatClipEvery: 0, repeatClipPositions: [] };
+    }
+    return {
+      repeatClipTrimId: parseInt(shareRepeatClipTrimId, 10),
+      repeatClipEvery: repeatEvery,
+      repeatClipPositions: positions,
+    };
+  };
+
+  // The Suggested-Sequences panel still uses the older repeat-only options,
+  // because SuggestedController has no positions column yet.
+  const computeLegacyRepeatClip = (mode, n, trimId) => {
     let repeatEvery = 0;
     if (mode === "every_clip") repeatEvery = 1;
     else if (mode === "every_n_clips") repeatEvery = Math.max(2, parseInt(n, 10) || 2);
@@ -240,6 +387,16 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
       repeatClipEvery: finalTrimId ? repeatEvery : 0,
     };
   };
+
+  // Badge text for the My Medleys list
+  const placementBadge = (positionsRaw, repeatEvery, clipCount) => {
+    if (repeatEvery === 1) return "every clip";
+    if (repeatEvery > 1) return `every ${repeatEvery} clips`;
+    const arr = parsePositionsInput(positionsRaw, clipCount);
+    if (arr.length === 0) return "at start";
+    return arr.map((p) => (p === 0 ? "start" : p === -1 ? "end" : `after clip ${p}`)).join(" + ");
+  };
+
   const suggestionsCountFor = (originalMedleyId) =>
     receivedSuggestions.filter((s) => s.OriginalMedleyId === originalMedleyId).length;
 
@@ -370,8 +527,8 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
     fetchTopRated();
     fetchTopMakers();
     fetchUsersDirectory();
-    fetchReceivedRequests();   // ← NEW, sirf ye ek line add hui hai
-}, []);
+    fetchReceivedRequests();
+  }, []);
 
   const fetchMedleyRatingSummary = async (medleyId) => {
     try {
@@ -387,16 +544,6 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
       }
     } catch (err) { /* silent */ }
   };
-
-  useEffect(() => {
-    fetchMyMedleys();
-    fetchSharedList();
-    fetchMySuggested();
-    fetchReceivedSuggestions();
-    fetchTopRated();
-    fetchTopMakers();
-    fetchUsersDirectory();
-  }, []);
 
   const togglePlay = (medleyId) => {
     setPlayingMedleyId((prev) => (prev === medleyId ? null : medleyId));
@@ -481,8 +628,10 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
         WatermarkStartTimeMs: editMedley.WatermarkStartTimeMs,
         WatermarkRepeatEvery: editMedley.WatermarkRepeatEvery,
         WatermarkLockFirst: editMedley.WatermarkLockFirst !== false,
+        WatermarkPositions: editMedley.WatermarkPositions || null,
         RepeatClipTrimId: editMedley.RepeatClipTrimId,
         RepeatClipEvery: editMedley.RepeatClipEvery,
+        RepeatClipPositions: editMedley.RepeatClipPositions || null,
       };
       const res = await axios.put(API.medleys.update(editMedley.MedleyId), payload);
       if (res.data.success) { closeEditModal(); fetchMyMedleys(); }
@@ -520,17 +669,37 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
     setShareWatermarks([]);
     setShareMedleyClips([]);
 
-    const existingRepeat = medley.WatermarkRepeatEvery;
-    if (existingRepeat === 1) setWatermarkRepeatMode("every_clip");
-    else if (existingRepeat && existingRepeat >= 2) { setWatermarkRepeatMode("every_n_clips"); setWatermarkRepeatN(existingRepeat); }
-    else { setWatermarkRepeatMode("first_only"); setWatermarkRepeatN(2); }
+    // Restore watermark placement from what was last saved
+    const wm = modeFromStored(
+      medley.WatermarkPositions,
+      medley.WatermarkRepeatEvery,
+      medley.ClipCount || 0
+    );
+    setWatermarkRepeatMode(wm.mode);
+    setEveryNClipsMode(wm.everyN);
+    setWatermarkRepeatN(wm.nValue);
+    setWatermarkCustomText(wm.customText);
     setLockFirstWatermark(medley.WatermarkLockFirst !== false);
 
-    const existingRcEvery = medley.RepeatClipEvery;
-    if (existingRcEvery === 1) setShareRepeatClipMode("every_clip");
-    else if (existingRcEvery && existingRcEvery >= 2) { setShareRepeatClipMode("every_n_clips"); setShareRepeatClipN(existingRcEvery); }
-    else { setShareRepeatClipMode("no_repeat"); setShareRepeatClipN(2); }
-    setShareRepeatClipTrimId(medley.RepeatClipTrimId ? String(medley.RepeatClipTrimId) : "");
+    // Restore repeat-clip placement
+    if (medley.RepeatClipTrimId) {
+      const rc = modeFromStored(
+        medley.RepeatClipPositions,
+        medley.RepeatClipEvery,
+        medley.ClipCount || 0
+      );
+      setShareRepeatClipMode(rc.mode);
+      setShareRepeatClipEveryN(rc.everyN);
+      setShareRepeatClipN(rc.nValue);
+      setShareRepeatClipCustomText(rc.customText);
+      setShareRepeatClipTrimId(String(medley.RepeatClipTrimId));
+    } else {
+      setShareRepeatClipMode("no_repeat");
+      setShareRepeatClipEveryN(false);
+      setShareRepeatClipN(2);
+      setShareRepeatClipCustomText("");
+      setShareRepeatClipTrimId("");
+    }
 
     setLoadingUsers(true);
     const user = getCurrentUser();
@@ -560,10 +729,12 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
     setShareError(""); setShareSuccessMsg(""); setShareProgressMsg("");
     setSelectedUserIds([]); setUserDropdownOpen(false);
     setAddWatermarkOnShare(false); setSelectedShareWatermarkId(null);
-    setShareWatermarks([]); setWatermarkRepeatMode("first_only");
-    setWatermarkRepeatN(2); setLockFirstWatermark(true);
+    setShareWatermarks([]); setWatermarkRepeatMode("start"); setEveryNClipsMode(false);
+    setWatermarkRepeatN(2); setLockFirstWatermark(true); setWatermarkCustomText("");
     setShareMedleyClips([]);
-    setShareRepeatClipMode("no_repeat"); setShareRepeatClipN(2); setShareRepeatClipTrimId("");
+    setShareRepeatClipMode("no_repeat"); setShareRepeatClipN(2);
+    setShareRepeatClipEveryN(false); setShareRepeatClipCustomText("");
+    setShareRepeatClipTrimId("");
   };
 
   const toggleUserSelection = (userId) => {
@@ -576,11 +747,29 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
     if (addWatermarkOnShare && !selectedShareWatermarkId) {
       setShareError("Please select a watermark, or uncheck the box"); return;
     }
+    if (addWatermarkOnShare && watermarkRepeatMode === "custom") {
+      const parsed = parsePositionsInput(watermarkCustomText, clipCountForShare());
+      if (parsed.length === 0) {
+        setShareError("Type where the watermark should go — for example: start, 2, end");
+        return;
+      }
+    }
+    if (shareRepeatClipMode === "custom" && shareRepeatClipTrimId) {
+      const parsed = parsePositionsInput(shareRepeatClipCustomText, clipCountForShare());
+      if (parsed.length === 0) {
+        setShareError("Type where the repeated clip should go — for example: start, 3, end");
+        return;
+      }
+    }
+
     const user = getCurrentUser();
     setShareError(""); setShareSuccessMsg(""); setShareProgressMsg(""); setSharing(true);
     try {
-      const { repeatClipTrimId, repeatClipEvery } = computeRepeatClip(shareRepeatClipMode, shareRepeatClipN, shareRepeatClipTrimId);
-      const wmSettings = addWatermarkOnShare ? computeWatermarkPlacement() : { repeatEvery: 0, lockFirst: true };
+      const rc = computeShareRepeatClip();
+      const wmSettings = addWatermarkOnShare
+        ? computeWatermarkPlacement()
+        : { positions: [], repeatEvery: 0, lockFirst: true };
+      const wmDescription = describePositions(wmSettings.positions, wmSettings.repeatEvery, wmSettings.lockFirst);
 
       setShareProgressMsg("Saving settings...");
       const updatePayload = {
@@ -593,27 +782,40 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
         WatermarkStartTimeMs: 0,
         WatermarkRepeatEvery: wmSettings.repeatEvery,
         WatermarkLockFirst: wmSettings.lockFirst,
-        RepeatClipTrimId: repeatClipTrimId,
-        RepeatClipEvery: repeatClipEvery,
+        WatermarkPositions: addWatermarkOnShare
+          ? serializePositions(wmSettings.positions)
+          : (shareMedleyObj.WatermarkPositions || null),
+        RepeatClipTrimId: rc.repeatClipTrimId,
+        RepeatClipEvery: rc.repeatClipEvery,
+        RepeatClipPositions: serializePositions(rc.repeatClipPositions),
       };
       try { await axios.put(API.medleys.update(shareMedleyId), updatePayload); }
       catch (updErr) { setShareError("Failed to save settings: " + (updErr.response?.data?.Message || updErr.message)); return; }
 
-      const needsRerender = addWatermarkOnShare || (repeatClipEvery > 0 && repeatClipTrimId);
+      const repeatClipActive = !!rc.repeatClipTrimId &&
+        (rc.repeatClipEvery > 0 || rc.repeatClipPositions.length > 0);
+      const needsRerender = addWatermarkOnShare || repeatClipActive;
       if (needsRerender) {
-        setShareProgressMsg("Re-rendering mashup...");
+        setShareProgressMsg(addWatermarkOnShare
+          ? `Re-rendering mashup — watermark ${wmDescription}...`
+          : "Re-rendering mashup...");
         try {
           const mergeRes = await axios.post(API.medleys.merge(shareMedleyId));
           if (mergeRes.data.success && mergeRes.data.outputFilePath) {
             const newPath = mergeRes.data.outputFilePath;
-            setMyMedleys((prev) => prev.map((m) => m.MedleyId === shareMedleyId
-              ? { ...m, OutputFilePath: newPath,
-                  WatermarkId: updatePayload.WatermarkId,
-                  WatermarkRepeatEvery: wmSettings.repeatEvery,
-                  WatermarkLockFirst: wmSettings.lockFirst,
-                  RepeatClipTrimId: repeatClipTrimId,
-                  RepeatClipEvery: repeatClipEvery }
-              : m));
+            const patch = {
+              OutputFilePath: newPath,
+              WatermarkId: updatePayload.WatermarkId,
+              WatermarkStartTimeMs: 0,
+              WatermarkRepeatEvery: wmSettings.repeatEvery,
+              WatermarkLockFirst: wmSettings.lockFirst,
+              WatermarkPositions: updatePayload.WatermarkPositions,
+              RepeatClipTrimId: rc.repeatClipTrimId,
+              RepeatClipEvery: rc.repeatClipEvery,
+              RepeatClipPositions: updatePayload.RepeatClipPositions,
+            };
+            setMyMedleys((prev) => prev.map((m) => m.MedleyId === shareMedleyId ? { ...m, ...patch } : m));
+            setShareMedleyObj((prev) => prev ? { ...prev, ...patch } : prev);
             setAudioBustToken(Date.now());
           } else { setShareError("Re-render failed: " + (mergeRes.data.message || "Unknown error")); return; }
         } catch (mergeErr) { setShareError("Re-render failed: " + (mergeErr.response?.data?.Message || mergeErr.message)); return; }
@@ -634,7 +836,11 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
       }
       setShareProgressMsg("");
       if (results.success > 0 && results.failures.length === 0) {
-        setShareSuccessMsg(`Shared with ${results.success} user(s) successfully!`);
+        setShareSuccessMsg(
+          addWatermarkOnShare
+            ? `Shared with ${results.success} user(s) — watermark plays ${wmDescription}.`
+            : `Shared with ${results.success} user(s) successfully!`
+        );
         setSelectedUserIds([]);
       } else if (results.success > 0) {
         setShareSuccessMsg(`Shared with ${results.success} user(s).`);
@@ -716,11 +922,13 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
       } else setSuggestedError(res.data.message || "Could not load suggested medley.");
     } catch { setSuggestedError("Failed to load suggested medley."); }
     finally { setLoadingSuggestedDetail(false); }
+    setShowSugLibrary(false); setSugLibraryClips([]); setSugLibraryError(""); setSugLibrarySearch("");
   };
   const closeSuggested = () => {
     setOpenSuggestedId(null); setSuggestedDetail(null);
     setSuggestedMsg(""); setSuggestedError("");
     setSugRepeatClipMode("no_repeat"); setSugRepeatClipN(2); setSugRepeatClipTrimId("");
+    setShowSugLibrary(false); setSugLibraryClips([]); setSugLibraryError(""); setSugLibrarySearch("");
   };
   const handleSuggestedDragStart = (i) => { suggestedDragRef.current = i; };
   const handleSuggestedDragOver = (e) => e.preventDefault();
@@ -734,16 +942,26 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
     suggestedDragRef.current = null;
   };
 
+  // Some clip-level controllers (e.g. medleyClips) return a raw
+  // Tuple<bool,string> shape: { Item1: bool, Item2: "message" } instead
+  // of { success, message }. This helper reads whichever shape comes back
+  // so we don't misreport a real 200/success as a failure.
+  const readApiResult = (data) => ({
+    ok: data?.success ?? data?.Item1 ?? false,
+    message: data?.message ?? data?.Item2 ?? "",
+  });
+
   const doDeleteSuggestedClip = async (clipId) => {
     setConfirmLoading(true);
     try {
       const res = await axios.delete(API.suggested.deleteClip(clipId));
       closeConfirm();
-      if (res.data.success) {
+      const { ok, message } = readApiResult(res.data);
+      if (ok) {
         setSuggestedDetail((prev) => ({
           ...prev, clips: prev.clips.filter((c) => c.SuggestedClipId !== clipId),
         }));
-      } else alert(res.data.message || "Delete failed");
+      } else alert(message || "Delete failed");
     } catch (err) {
       closeConfirm();
       alert(err.response?.data?.Message || err.response?.data?.message || err.message || "Delete failed");
@@ -760,12 +978,83 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
     });
   };
 
+  // ==========================
+  // Suggested Sequences — add a new clip from the TrimClips library
+  // ==========================
+  const toggleSugLibrary = async () => {
+    const next = !showSugLibrary;
+    setShowSugLibrary(next);
+    if (next && sugLibraryClips.length === 0) {
+      await fetchSugLibrary();
+    }
+  };
+
+  const fetchSugLibrary = async () => {
+    setLoadingSugLibrary(true);
+    setSugLibraryError("");
+    try {
+      const ownerId = suggestedDetail?.medley?.UserId || currentUser?.UserId;
+      const res = await axios.get(API.trimClips.byUser(ownerId));
+      setSugLibraryClips(res.data || []);
+    } catch (err) {
+      setSugLibraryError("Failed to load your TrimClips library.");
+    } finally {
+      setLoadingSugLibrary(false);
+    }
+  };
+
+  const countInSuggested = (trimClipId) =>
+    (suggestedDetail?.clips || []).filter((c) => c.TrimClipId === trimClipId).length;
+
+  const filteredSugLibrary = sugLibraryClips.filter((tc) => {
+    const q = sugLibrarySearch.trim().toLowerCase();
+    if (!q) return true;
+    return [tc.ClipName, tc.SongTitle, tc.ArtistName]
+      .filter(Boolean)
+      .some((f) => String(f).toLowerCase().includes(q));
+  });
+
+  const handleAddSuggestedClip = async (trimClip) => {
+    if (!openSuggestedId || !suggestedDetail) return;
+    setAddingSugClipId(trimClip.TrimClipId);
+    setSuggestedMsg(""); setSuggestedError("");
+    try {
+      const nextSeq = (suggestedDetail.clips?.length || 0) + 1;
+      const res = await axios.post(API.suggested.addClip, {
+        SuggestedMedleyId: openSuggestedId,
+        TrimClipId: trimClip.TrimClipId,
+        SequenceNumber: nextSeq,
+      });
+      const { ok, message } = readApiResult(res.data);
+      if (ok) {
+        const newClip = res.data.clip || {
+          SuggestedClipId: res.data.suggestedClipId,
+          SuggestedMedleyId: openSuggestedId,
+          TrimClipId: trimClip.TrimClipId,
+          SequenceNumber: nextSeq,
+        };
+        setSuggestedDetail((prev) => ({ ...prev, clips: [...prev.clips, newClip] }));
+        // If the backend didn't hand back a real id, refresh from server.
+        if (!res.data.clip && res.data.suggestedClipId == null) {
+          await openSuggested(openSuggestedId);
+        }
+      } else {
+        setSuggestedError(message || "Failed to add clip.");
+      }
+    } catch (err) {
+      setSuggestedError(err.response?.data?.Message || err.response?.data?.message || "Failed to add clip.");
+    } finally {
+      setAddingSugClipId(null);
+    }
+  };
+
   const handleSaveSuggestedOrder = async () => {
     if (!suggestedDetail) return;
     setSavingSuggested(true); setSuggestedMsg(""); setSuggestedError("");
     try {
       const newClips = suggestedDetail.clips.map((c, i) => ({ ...c, SequenceNumber: i + 1 }));
-      const { repeatClipTrimId, repeatClipEvery } = computeRepeatClip(sugRepeatClipMode, sugRepeatClipN, sugRepeatClipTrimId);
+      const { repeatClipTrimId, repeatClipEvery } =
+        computeLegacyRepeatClip(sugRepeatClipMode, sugRepeatClipN, sugRepeatClipTrimId);
       try {
         await axios.put(API.suggested.updateSettings(openSuggestedId), {
           SuggestedMedleyId: openSuggestedId,
@@ -893,49 +1182,49 @@ const [submittingResponse, setSubmittingResponse] = useState(false);
       icon: "✨",
       onConfirm: () => doFinalize(suggestedId),
     });
-};
+  };
 
-// ↓↓↓ Ye teeno yahan, TOP-LEVEL pe hone chahiye (component ke andar, function ke bahar)
-const openResponseModal = (request, status) => {
-  setRespondingRequest(request);
-  setResponseStatus(status);
-  setResponseText(request.ResponseMessage || "");
-};
-const closeResponseModal = () => {
-  setRespondingRequest(null);
-  setResponseText("");
-  setSubmittingResponse(false);
-};
-
-const handleSubmitResponse = async () => {
-  if (!respondingRequest) return;
-  setSubmittingResponse(true);
-  try {
-    const res = await axios.put(API.medleyRequests.respond(respondingRequest.RequestId), {
-      Status: responseStatus,
-      ResponseMessage: responseText.trim() || null,
-    });
-    if (res.data.success) {
-      setReceivedRequests((prev) => prev.map((r) =>
-        r.RequestId === respondingRequest.RequestId
-          ? { ...r, Status: responseStatus, ResponseMessage: responseText.trim(), RespondedAt: new Date().toISOString() }
-          : r
-      ));
-      if (respondingRequest.Status === "Pending" && (responseStatus === "Accepted" || responseStatus === "Rejected")) {
-        setPendingRequestCount((prev) => Math.max(0, prev - 1));
-      }
-      closeResponseModal();
-    } else {
-      alert(res.data.message || "Failed to respond");
-    }
-  } catch (err) {
-    alert(err.response?.data?.Message || err.response?.data?.message || "Failed to respond");
-  } finally {
+  // ==========================
+  // MEDLEY REQUESTS — respond
+  // ==========================
+  const openResponseModal = (request, status) => {
+    setRespondingRequest(request);
+    setResponseStatus(status);
+    setResponseText(request.ResponseMessage || "");
+  };
+  const closeResponseModal = () => {
+    setRespondingRequest(null);
+    setResponseText("");
     setSubmittingResponse(false);
-  }
-};
+  };
 
-  
+  const handleSubmitResponse = async () => {
+    if (!respondingRequest) return;
+    setSubmittingResponse(true);
+    try {
+      const res = await axios.put(API.medleyRequests.respond(respondingRequest.RequestId), {
+        Status: responseStatus,
+        ResponseMessage: responseText.trim() || null,
+      });
+      if (res.data.success) {
+        setReceivedRequests((prev) => prev.map((r) =>
+          r.RequestId === respondingRequest.RequestId
+            ? { ...r, Status: responseStatus, ResponseMessage: responseText.trim(), RespondedAt: new Date().toISOString() }
+            : r
+        ));
+        if (respondingRequest.Status === "Pending" && (responseStatus === "Accepted" || responseStatus === "Rejected")) {
+          setPendingRequestCount((prev) => Math.max(0, prev - 1));
+        }
+        closeResponseModal();
+      } else {
+        alert(res.data.message || "Failed to respond");
+      }
+    } catch (err) {
+      alert(err.response?.data?.Message || err.response?.data?.message || "Failed to respond");
+    } finally {
+      setSubmittingResponse(false);
+    }
+  };
 
   // ==========================
   // REVIEW: Open rate modal
@@ -1018,7 +1307,135 @@ const handleSubmitResponse = async () => {
     </div>
   );
 
-  const renderRepeatClipBlock = ({ clips, trimIdValue, setTrimIdValue, mode, setMode, nValue, setNValue }) => (
+  // ==========================
+  // Shared placement picker — used by BOTH the watermark block and the
+  // share-modal repeat-clip block so they behave identically.
+  // ==========================
+  const renderPlacementOptions = ({
+    label, mode, setMode, everyN, setEveryN, nValue, setNValue,
+    customText, setCustomText, clipCount, includeNoRepeat = false,
+    lockFirst, setLockFirst,
+  }) => {
+    const opts = [];
+    if (includeNoRepeat) opts.push({ key: "no_repeat", text: "No repeat" });
+    opts.push(
+      { key: "start", text: "Start" },
+      { key: "middle", text: "Middle" },
+      { key: "end", text: "End" },
+      { key: "start_end", text: "Start and End (both)" },
+      { key: "every_clip", text: "Every Clip" },
+      { key: "custom", text: "Custom — main khud likhunga" },
+    );
+
+    const resolved = positionsForMode({ mode, customText, clipCount, everyN, nValue });
+    const preview = mode === "no_repeat"
+      ? null
+      : describePositions(resolved.positions, resolved.repeatEvery, lockFirst);
+
+    return (
+      <div>
+        <label className="block text-xs text-gray-400 mb-2">{label}</label>
+        <div className="space-y-2">
+          {opts.map((o) => (
+            <label key={o.key} className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" checked={mode === o.key}
+                     onChange={() => setMode(o.key)} className="accent-purple-500" />
+              <span>{o.text}</span>
+            </label>
+          ))}
+
+          {mode === "every_clip" && (
+            <div className="ml-6 mt-1 space-y-2 bg-gray-900 rounded-lg p-2">
+              <label className="flex items-center gap-2 text-xs cursor-pointer">
+                <input type="checkbox" checked={everyN}
+                       onChange={(e) => setEveryN(e.target.checked)}
+                       className="accent-purple-500" />
+                <span>Repeat every N clips instead of every single clip</span>
+              </label>
+              {everyN && (
+                <label className="flex items-center gap-2 text-xs cursor-pointer flex-wrap">
+                  <span>Har</span>
+                  <input type="number" min="2" max="20" value={nValue}
+                         onChange={(e) => setNValue(Math.max(2, parseInt(e.target.value, 10) || 2))}
+                         className="w-16 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-center" />
+                  <span>clips ke baad</span>
+                </label>
+              )}
+              {setLockFirst && (
+                <label className="flex items-center gap-2 text-xs cursor-pointer">
+                  <input type="checkbox" checked={lockFirst}
+                         onChange={(e) => setLockFirst(e.target.checked)}
+                         className="accent-purple-500" />
+                  <span>🔒 Pehle bhi rakho</span>
+                </label>
+              )}
+            </div>
+          )}
+
+          {mode === "custom" && (
+            <div className="ml-6 mt-1 bg-gray-900 rounded-lg p-2 space-y-2">
+              <input
+                type="text"
+                value={customText}
+                onChange={(e) => setCustomText(e.target.value)}
+                placeholder="start, 2, 5, end"
+                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-2 py-2 text-sm"
+              />
+              <p className="text-gray-500 text-xs leading-relaxed">
+                Comma se alag karo. <span className="text-gray-300">start</span> = pehle clip se pehle,
+                {" "}<span className="text-gray-300">end</span> = sab ke baad,
+                {" "}<span className="text-gray-300">3</span> = clip 3 ke baad.
+                {clipCount > 0 && ` Is medley mein ${clipCount} clips hain.`}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {preview && (
+          <p className="text-purple-300 text-xs mt-2">Will play {preview}.</p>
+        )}
+      </div>
+    );
+  };
+
+  // Share modal repeat-clip block — same placement options as the watermark
+  const renderShareRepeatClipBlock = () => (
+    <div className="bg-gray-800 rounded-xl p-3 space-y-3">
+      <p className="text-sm font-semibold">🔁 Repeat a clip</p>
+      <div>
+        <label className="block text-xs text-gray-400 mb-1">Choose clip to repeat</label>
+        <select value={shareRepeatClipTrimId}
+                onChange={(e) => setShareRepeatClipTrimId(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-2 text-sm">
+          <option value="">-- Select a clip --</option>
+          {shareMedleyClips.map((c, idx) => (
+            <option key={c.MedleyClipId || idx} value={c.TrimClipId}>
+              Clip {idx + 1} — {c.ClipName || c.SongTitle || `TrimClip #${c.TrimClipId}`}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {renderPlacementOptions({
+        label: "Placement",
+        mode: shareRepeatClipMode, setMode: setShareRepeatClipMode,
+        everyN: shareRepeatClipEveryN, setEveryN: setShareRepeatClipEveryN,
+        nValue: shareRepeatClipN, setNValue: setShareRepeatClipN,
+        customText: shareRepeatClipCustomText, setCustomText: setShareRepeatClipCustomText,
+        clipCount: clipCountForShare(),
+        includeNoRepeat: true,
+        lockFirst: false,
+      })}
+
+      {shareRepeatClipMode !== "no_repeat" && !shareRepeatClipTrimId && (
+        <p className="text-yellow-400 text-xs">⚠️ Please choose a clip above for the repeat to work.</p>
+      )}
+    </div>
+  );
+
+  // Suggested-panel repeat block — unchanged options, since SuggestedController
+  // has no positions column yet.
+  const renderLegacyRepeatClipBlock = ({ clips, trimIdValue, setTrimIdValue, mode, setMode, nValue, setNValue }) => (
     <div className="bg-gray-800 rounded-xl p-3 space-y-3">
       <p className="text-sm font-semibold">🔁 Repeat a clip</p>
       <div>
@@ -1138,21 +1555,21 @@ const handleSubmitResponse = async () => {
         </div>
 
         <div className="flex flex-wrap gap-2 mt-3">
-  {FILTERS.map((f) => (
-    <button
-      key={f.key}
-      onClick={() => setActiveFilter(f.key)}
-      className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition-colors ${
-        activeFilter === f.key
-          ? "bg-purple-600 text-white"
-          : "bg-gray-800 text-gray-300 hover:bg-gray-700"
-      }`}
-    >
-      <span>{f.icon}</span>
-      <span>{f.label}</span>
-    </button>
-  ))}
-</div>
+          {FILTERS.map((f) => (
+            <button
+              key={f.key}
+              onClick={() => setActiveFilter(f.key)}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition-colors ${
+                activeFilter === f.key
+                  ? "bg-purple-600 text-white"
+                  : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+              }`}
+            >
+              <span>{f.icon}</span>
+              <span>{f.label}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* =================================================== */}
@@ -1291,15 +1708,12 @@ const handleSubmitResponse = async () => {
                           {m.TotalDurationMs > 0 && ` · ${formatMs(m.TotalDurationMs)}`}
                           {m.WatermarkId && (
                             <span className="text-purple-400">
-                              {" "}· 🔖 watermarked
-                              {m.WatermarkRepeatEvery === 1 ? " (every clip)"
-                                : m.WatermarkRepeatEvery > 1 ? ` (every ${m.WatermarkRepeatEvery} clips)` : ""}
+                              {" "}· 🔖 watermarked ({placementBadge(m.WatermarkPositions, m.WatermarkRepeatEvery, m.ClipCount || 0)})
                             </span>
                           )}
-                          {m.RepeatClipTrimId && m.RepeatClipEvery > 0 && (
+                          {m.RepeatClipTrimId && (m.RepeatClipEvery > 0 || m.RepeatClipPositions) && (
                             <span className="text-pink-400">
-                              {" "}· 🔁 clip #{m.RepeatClipTrimId} repeats
-                              {m.RepeatClipEvery === 1 ? " (every clip)" : ` (every ${m.RepeatClipEvery} clips)`}
+                              {" "}· 🔁 clip #{m.RepeatClipTrimId} ({placementBadge(m.RepeatClipPositions, m.RepeatClipEvery, m.ClipCount || 0)})
                             </span>
                           )}
                         </p>
@@ -1334,6 +1748,7 @@ const handleSubmitResponse = async () => {
                         <button onClick={() => openReviewsModal(m.MedleyId, m.MedleyName)}
                                 className="bg-yellow-700 hover:bg-yellow-800 px-3 py-2 rounded-lg text-xs font-semibold">💬</button>
                         <button onClick={() => openEditModal(m)} className="bg-yellow-600 hover:bg-yellow-700 px-3 py-2 rounded-lg text-xs font-semibold">✏️</button>
+                        <button onClick={() => setClipsEditMedley(m)} className="bg-green-600 hover:bg-green-700 px-3 py-2 rounded-lg text-xs font-semibold" title="Reorder / add / re-trim clips">🎛</button>
                         <button onClick={() => confirmDelete(m.MedleyId)} className="bg-red-600 hover:bg-red-700 px-3 py-2 rounded-lg text-xs font-semibold">🗑</button>
                       </div>
                     </div>
@@ -1488,6 +1903,15 @@ const handleSubmitResponse = async () => {
                         controls
                         src={buildAudioUrl(receivedDetail.medley.FinalOutputFilePath || receivedDetail.medley.OutputFilePath)}
                         className="w-full" />
+                      {receivedDetail.medley.FinalOutputFilePath && (
+                        <a
+                          href={buildAudioUrl(receivedDetail.medley.FinalOutputFilePath)}
+                          download={`${(receivedDetail.medley.OriginalMedleyName || "medley").replace(/[^\w\- ]/g, "")}.mp3`}
+                          className="mt-2 inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 px-3 py-2 rounded-lg text-xs font-semibold"
+                        >
+                          ⬇️ Download MP3
+                        </a>
+                      )}
                     </div>
                   )}
 
@@ -1532,85 +1956,85 @@ const handleSubmitResponse = async () => {
       )}
 
       {/* MEDLEY REQUESTS RECEIVED */}
-{receivedRequests.length > 0 && (
-  <div className="w-full max-w-2xl mb-10">
-    <div className="flex justify-between items-center mb-3">
-      <div>
-        <h2 className="text-2xl font-bold">
-          📨 Medley Requests
-          {pendingRequestCount > 0 && (
-            <span className="ml-2 bg-red-600 text-white text-xs px-2 py-1 rounded-full align-middle">
-              {pendingRequestCount} new
-            </span>
-          )}
-        </h2>
-        <p className="text-gray-500 text-xs">Custom medley requests sent to you</p>
-      </div>
-      <button onClick={fetchReceivedRequests} className="text-gray-400 hover:text-white text-sm">⟳ Refresh</button>
-    </div>
-
-    {loadingReceivedRequests ? (
-      <p className="text-gray-400 text-sm text-center py-4">Loading...</p>
-    ) : (
-      <div className="space-y-2">
-        {receivedRequests.map((r) => (
-          <div key={r.RequestId} className="bg-gray-800 rounded-xl px-4 py-3">
-            <div className="flex justify-between items-start gap-2">
-              <div className="flex-1 min-w-0">
-                <p className="font-semibold text-sm truncate">{r.RequestTitle}</p>
-                <p className="text-gray-400 text-xs">
-                  👤 {r.RequesterUserName || `User #${r.RequesterUserId}`}
-                  {r.Occasion && ` · 🎉 ${r.Occasion}`}
-                  {r.PreferredLength && ` · ⏱ ${r.PreferredLength}`}
-                  {r.Category && ` · 🏷 ${r.Category}`}
-                </p>
-                {r.RequestMessage && (
-                  <p className="text-gray-300 text-sm mt-1 whitespace-pre-wrap">{r.RequestMessage}</p>
+      {receivedRequests.length > 0 && (
+        <div className="w-full max-w-2xl mb-10">
+          <div className="flex justify-between items-center mb-3">
+            <div>
+              <h2 className="text-2xl font-bold">
+                📨 Medley Requests
+                {pendingRequestCount > 0 && (
+                  <span className="ml-2 bg-red-600 text-white text-xs px-2 py-1 rounded-full align-middle">
+                    {pendingRequestCount} new
+                  </span>
                 )}
-                <p className="text-gray-500 text-xs mt-1">
-                  {new Date(r.CreatedAt).toLocaleString()}
-                </p>
-              </div>
-              <span className={`text-xs px-2 py-1 rounded-full flex-shrink-0 ${
-                r.Status === "Pending" ? "bg-yellow-600/30 border border-yellow-500 text-yellow-300"
-                : r.Status === "Accepted" ? "bg-blue-600/30 border border-blue-500 text-blue-300"
-                : r.Status === "Completed" ? "bg-green-600/30 border border-green-500 text-green-300"
-                : "bg-red-600/30 border border-red-500 text-red-300"
-              }`}>
-                {r.Status}
-              </span>
+              </h2>
+              <p className="text-gray-500 text-xs">Custom medley requests sent to you</p>
             </div>
-
-            {r.ResponseMessage && (
-              <p className="text-purple-300 text-xs mt-2 bg-gray-900 rounded-lg p-2">
-                Your reply: {r.ResponseMessage}
-              </p>
-            )}
-
-            {r.Status === "Pending" && (
-              <div className="flex gap-2 mt-3">
-                <button onClick={() => openResponseModal(r, "Accepted")}
-                        className="flex-1 bg-green-600 hover:bg-green-700 py-2 rounded-lg text-xs font-semibold">
-                  ✅ Accept
-                </button>
-                <button onClick={() => openResponseModal(r, "Rejected")}
-                        className="flex-1 bg-red-600 hover:bg-red-700 py-2 rounded-lg text-xs font-semibold">
-                  ❌ Reject
-                </button>
-              </div>
-            )}
-            {r.Status === "Accepted" && (
-              <button onClick={() => openResponseModal(r, "Completed")}
-                      className="w-full mt-3 bg-purple-600 hover:bg-purple-700 py-2 rounded-lg text-xs font-semibold">
-                🎉 Mark as Completed
-              </button>
-            )}
+            <button onClick={fetchReceivedRequests} className="text-gray-400 hover:text-white text-sm">⟳ Refresh</button>
           </div>
-        ))}
-      </div>
-    )}
-  </div>
-)}
+
+          {loadingReceivedRequests ? (
+            <p className="text-gray-400 text-sm text-center py-4">Loading...</p>
+          ) : (
+            <div className="space-y-2">
+              {receivedRequests.map((r) => (
+                <div key={r.RequestId} className="bg-gray-800 rounded-xl px-4 py-3">
+                  <div className="flex justify-between items-start gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm truncate">{r.RequestTitle}</p>
+                      <p className="text-gray-400 text-xs">
+                        👤 {r.RequesterUserName || `User #${r.RequesterUserId}`}
+                        {r.Occasion && ` · 🎉 ${r.Occasion}`}
+                        {r.PreferredLength && ` · ⏱ ${r.PreferredLength}`}
+                        {r.Category && ` · 🏷 ${r.Category}`}
+                      </p>
+                      {r.RequestMessage && (
+                        <p className="text-gray-300 text-sm mt-1 whitespace-pre-wrap">{r.RequestMessage}</p>
+                      )}
+                      <p className="text-gray-500 text-xs mt-1">
+                        {new Date(r.CreatedAt).toLocaleString()}
+                      </p>
+                    </div>
+                    <span className={`text-xs px-2 py-1 rounded-full flex-shrink-0 ${
+                      r.Status === "Pending" ? "bg-yellow-600/30 border border-yellow-500 text-yellow-300"
+                      : r.Status === "Accepted" ? "bg-blue-600/30 border border-blue-500 text-blue-300"
+                      : r.Status === "Completed" ? "bg-green-600/30 border border-green-500 text-green-300"
+                      : "bg-red-600/30 border border-red-500 text-red-300"
+                    }`}>
+                      {r.Status}
+                    </span>
+                  </div>
+
+                  {r.ResponseMessage && (
+                    <p className="text-purple-300 text-xs mt-2 bg-gray-900 rounded-lg p-2">
+                      Your reply: {r.ResponseMessage}
+                    </p>
+                  )}
+
+                  {r.Status === "Pending" && (
+                    <div className="flex gap-2 mt-3">
+                      <button onClick={() => openResponseModal(r, "Accepted")}
+                              className="flex-1 bg-green-600 hover:bg-green-700 py-2 rounded-lg text-xs font-semibold">
+                        ✅ Accept
+                      </button>
+                      <button onClick={() => openResponseModal(r, "Rejected")}
+                              className="flex-1 bg-red-600 hover:bg-red-700 py-2 rounded-lg text-xs font-semibold">
+                        ❌ Reject
+                      </button>
+                    </div>
+                  )}
+                  {r.Status === "Accepted" && (
+                    <button onClick={() => openResponseModal(r, "Completed")}
+                            className="w-full mt-3 bg-purple-600 hover:bg-purple-700 py-2 rounded-lg text-xs font-semibold">
+                      🎉 Mark as Completed
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* SHARED WITH YOU */}
       {sectionVisible("shared") && (
@@ -1780,25 +2204,96 @@ const handleSubmitResponse = async () => {
                         key={`fin-${suggestedDetail.medley.SuggestedMedleyId}-${suggestedDetail.medley.FinalOutputFilePath}-${audioBustToken}`}
                         controls src={buildAudioUrl(suggestedDetail.medley.FinalOutputFilePath)}
                         className="w-full" />
+                      <a
+                        href={buildAudioUrl(suggestedDetail.medley.FinalOutputFilePath)}
+                        download={`${(suggestedDetail.medley.MedleyName || "medley").replace(/[^\w\- ]/g, "")}.mp3`}
+                        className="mt-2 inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 px-3 py-2 rounded-lg text-xs font-semibold"
+                      >
+                        ⬇️ Download MP3
+                      </a>
                     </div>
                   )}
 
                   {suggestedDetail.medley.OutputFilePath && !suggestedDetail.medley.FinalOutputFilePath && (
-                    <audio
-                      key={`sug-${suggestedDetail.medley.SuggestedMedleyId}-${suggestedDetail.medley.OutputFilePath}-${audioBustToken}`}
-                      controls src={buildAudioUrl(suggestedDetail.medley.OutputFilePath)}
-                      className="w-full mb-3" />
+                    <div className={suggestedDetail.medley.AcceptedAsIs ? "mb-3 bg-green-950 border border-green-700 rounded-lg p-3" : "mb-3"}>
+                      <audio
+                        key={`sug-${suggestedDetail.medley.SuggestedMedleyId}-${suggestedDetail.medley.OutputFilePath}-${audioBustToken}`}
+                        controls src={buildAudioUrl(suggestedDetail.medley.OutputFilePath)}
+                        className="w-full" />
+                      {suggestedDetail.medley.AcceptedAsIs && (
+                        <a
+                          href={buildAudioUrl(suggestedDetail.medley.OutputFilePath)}
+                          download={`${(suggestedDetail.medley.MedleyName || "medley").replace(/[^\w\- ]/g, "")}.mp3`}
+                          className="mt-2 inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 px-3 py-2 rounded-lg text-xs font-semibold"
+                        >
+                          ⬇️ Download MP3
+                        </a>
+                      )}
+                    </div>
                   )}
 
                   {!suggestedDetail.medley.AcceptedAsIs && (
                     <>
                       <div className="mb-4">
-                        {renderRepeatClipBlock({
+                        {renderLegacyRepeatClipBlock({
                           clips: suggestedDetail.clips,
                           trimIdValue: sugRepeatClipTrimId, setTrimIdValue: setSugRepeatClipTrimId,
                           mode: sugRepeatClipMode, setMode: setSugRepeatClipMode,
                           nValue: sugRepeatClipN, setNValue: setSugRepeatClipN,
                         })}
+                      </div>
+
+                      <div className="mb-4">
+                        <button onClick={toggleSugLibrary}
+                                className="w-full bg-green-600 hover:bg-green-700 py-3 rounded-xl font-semibold text-sm">
+                          {showSugLibrary ? "▲ Hide TrimClips Library" : "+ Add New Clip from Library"}
+                        </button>
+
+                        {showSugLibrary && (
+                          <div className="mt-3 bg-gray-800 rounded-xl p-3">
+                            <input
+                              type="text"
+                              value={sugLibrarySearch}
+                              onChange={(e) => setSugLibrarySearch(e.target.value)}
+                              placeholder="Search your TrimClips..."
+                              className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm mb-3"
+                            />
+                            {loadingSugLibrary ? (
+                              <p className="text-gray-400 text-sm text-center py-4">Loading library...</p>
+                            ) : sugLibraryError ? (
+                              <p className="text-red-400 text-sm text-center py-4">{sugLibraryError}</p>
+                            ) : filteredSugLibrary.length === 0 ? (
+                              <p className="text-gray-400 text-sm text-center py-4">No TrimClips found.</p>
+                            ) : (
+                              <div className="max-h-64 overflow-y-auto space-y-2">
+                                {filteredSugLibrary.map((tc) => {
+                                  const usedCount = countInSuggested(tc.TrimClipId);
+                                  return (
+                                    <div key={tc.TrimClipId} className="flex items-center justify-between gap-2 bg-gray-900 rounded-lg px-3 py-2">
+                                      <div className="min-w-0 flex-1">
+                                        <p className="text-sm font-semibold truncate">
+                                          {tc.ClipName || tc.SongTitle || `TrimClip #${tc.TrimClipId}`}
+                                          {usedCount > 0 && (
+                                            <span className="ml-2 text-purple-400 text-xs">already added ×{usedCount}</span>
+                                          )}
+                                        </p>
+                                        {tc.ArtistName && <p className="text-gray-400 text-xs truncate">{tc.ArtistName}</p>}
+                                        {tc.DurationMs > 0 && <p className="text-gray-500 text-xs">{formatMs(tc.DurationMs)}</p>}
+                                      </div>
+                                      <button
+                                        onClick={() => handleAddSuggestedClip(tc)}
+                                        disabled={addingSugClipId === tc.TrimClipId}
+                                        className="bg-purple-600 hover:bg-purple-700 px-3 py-2 rounded-lg text-xs font-semibold disabled:opacity-50 flex-shrink-0"
+                                      >
+                                        {addingSugClipId === tc.TrimClipId ? "Adding..." : "+ Add"}
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
 
                       <p className="text-gray-500 text-xs mb-2">Drag clips to reorder · click ✂️ to re-trim · click 🗑 to remove</p>
@@ -1906,39 +2401,17 @@ const handleSubmitResponse = async () => {
                           })}
                         </select>
                       </div>
-                      <div>
-                        <label className="block text-xs text-gray-400 mb-2">Watermark placement</label>
-                        <div className="space-y-2">
-                          <label className="flex items-center gap-2 text-sm cursor-pointer">
-                            <input type="radio" name="wmRepeatMode" checked={watermarkRepeatMode === "first_only"}
-                                   onChange={() => setWatermarkRepeatMode("first_only")} className="accent-purple-500" />
-                            <span>Sirf pehle</span>
-                          </label>
-                          <label className="flex items-center gap-2 text-sm cursor-pointer">
-                            <input type="radio" name="wmRepeatMode" checked={watermarkRepeatMode === "every_clip"}
-                                   onChange={() => setWatermarkRepeatMode("every_clip")} className="accent-purple-500" />
-                            <span>Har clip ke baad</span>
-                          </label>
-                          <label className="flex items-center gap-2 text-sm cursor-pointer flex-wrap">
-                            <input type="radio" name="wmRepeatMode" checked={watermarkRepeatMode === "every_n_clips"}
-                                   onChange={() => setWatermarkRepeatMode("every_n_clips")} className="accent-purple-500" />
-                            <span>Har</span>
-                            <input type="number" min="2" max="20" value={watermarkRepeatN}
-                                   onChange={e => setWatermarkRepeatN(Math.max(2, parseInt(e.target.value, 10) || 2))}
-                                   onFocus={() => setWatermarkRepeatMode("every_n_clips")}
-                                   className="w-16 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm text-center" />
-                            <span>clips ke baad</span>
-                          </label>
-                        </div>
-                      </div>
-                      {watermarkRepeatMode !== "first_only" && (
-                        <label className="flex items-center gap-2 cursor-pointer bg-gray-900 rounded-lg px-3 py-2">
-                          <input type="checkbox" checked={lockFirstWatermark}
-                                 onChange={e => setLockFirstWatermark(e.target.checked)}
-                                 className="accent-purple-500 w-4 h-4" />
-                          <span className="text-sm">🔒 Pehle bhi watermark rakho</span>
-                        </label>
-                      )}
+
+                      {renderPlacementOptions({
+                        label: "Watermark placement",
+                        mode: watermarkRepeatMode, setMode: setWatermarkRepeatMode,
+                        everyN: everyNClipsMode, setEveryN: setEveryNClipsMode,
+                        nValue: watermarkRepeatN, setNValue: setWatermarkRepeatN,
+                        customText: watermarkCustomText, setCustomText: setWatermarkCustomText,
+                        clipCount: clipCountForShare(),
+                        includeNoRepeat: false,
+                        lockFirst: lockFirstWatermark, setLockFirst: setLockFirstWatermark,
+                      })}
                     </div>
                   )
                 )}
@@ -1949,12 +2422,7 @@ const handleSubmitResponse = async () => {
               {shareMedleyClips.length === 0 ? (
                 <p className="text-gray-500 text-xs">Loading clips for repeat option...</p>
               ) : (
-                renderRepeatClipBlock({
-                  clips: shareMedleyClips,
-                  trimIdValue: shareRepeatClipTrimId, setTrimIdValue: setShareRepeatClipTrimId,
-                  mode: shareRepeatClipMode, setMode: setShareRepeatClipMode,
-                  nValue: shareRepeatClipN, setNValue: setShareRepeatClipN,
-                })
+                renderShareRepeatClipBlock()
               )}
             </div>
 
@@ -1977,7 +2445,7 @@ const handleSubmitResponse = async () => {
         </div>
       )}
 
-      {/* EDIT MODAL */}
+      {/* EDIT MODAL (rename / basic details) */}
       {editMedley && (
         <div className="fixed inset-0 bg-black/80 flex justify-center items-center z-50 px-4">
           <div className="bg-gray-900 p-6 rounded-2xl w-full max-w-md text-white">
@@ -2006,6 +2474,18 @@ const handleSubmitResponse = async () => {
           </div>
         </div>
       )}
+
+      {/* EDIT MODAL (clip management — reorder / add / re-trim) */}
+      <EditMedleyModal
+        isOpen={!!clipsEditMedley}
+        onClose={() => setClipsEditMedley(null)}
+        medley={clipsEditMedley}
+        currentUser={currentUser}
+        onSaved={(updated) => {
+          setMyMedleys((prev) => prev.map((m) => m.MedleyId === updated.MedleyId ? { ...m, ...updated } : m));
+          setAudioBustToken(Date.now());
+        }}
+      />
 
       {/* RATE MODAL */}
       {rateMedley && (
@@ -2115,48 +2595,45 @@ const handleSubmitResponse = async () => {
       )}
 
       {/* Response Modal (ShopKeeper responding to a request) */}
-{respondingRequest && (
-  <div className="fixed inset-0 bg-black/80 flex justify-center items-center z-50 px-4">
-    <div className="bg-gray-900 border-2 border-purple-600 p-6 rounded-2xl w-full max-w-md text-white">
-      <h2 className="text-xl font-bold mb-1">
-        {responseStatus === "Accepted" && "✅ Accept Request"}
-        {responseStatus === "Rejected" && "❌ Reject Request"}
-        {responseStatus === "Completed" && "🎉 Mark as Completed"}
-      </h2>
-      <p className="text-gray-400 text-sm mb-4">"{respondingRequest.RequestTitle}"</p>
-      <label className="block text-gray-400 text-xs mb-1">Your Reply (optional)</label>
-      <textarea
-        value={responseText}
-        onChange={(e) => setResponseText(e.target.value)}
-        placeholder="Add a message for the client..."
-        rows={4}
-        maxLength={1000}
-        className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 mb-3 text-sm resize-none"
-      />
-      <div className="flex gap-3">
-        <button
-          onClick={handleSubmitResponse}
-          disabled={submittingResponse}
-          className={`flex-1 py-3 rounded-xl font-semibold text-sm disabled:opacity-50 ${
-            responseStatus === "Rejected" ? "bg-red-600 hover:bg-red-700" : "bg-green-600 hover:bg-green-700"
-          }`}
-        >
-          {submittingResponse ? "Sending..." : `Confirm ${responseStatus}`}
-        </button>
-        <button
-          onClick={closeResponseModal}
-          disabled={submittingResponse}
-          className="flex-1 bg-gray-700 hover:bg-gray-600 py-3 rounded-xl font-semibold text-sm disabled:opacity-50"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  </div>
-)}
-
-
-
+      {respondingRequest && (
+        <div className="fixed inset-0 bg-black/80 flex justify-center items-center z-50 px-4">
+          <div className="bg-gray-900 border-2 border-purple-600 p-6 rounded-2xl w-full max-w-md text-white">
+            <h2 className="text-xl font-bold mb-1">
+              {responseStatus === "Accepted" && "✅ Accept Request"}
+              {responseStatus === "Rejected" && "❌ Reject Request"}
+              {responseStatus === "Completed" && "🎉 Mark as Completed"}
+            </h2>
+            <p className="text-gray-400 text-sm mb-4">"{respondingRequest.RequestTitle}"</p>
+            <label className="block text-gray-400 text-xs mb-1">Your Reply (optional)</label>
+            <textarea
+              value={responseText}
+              onChange={(e) => setResponseText(e.target.value)}
+              placeholder="Add a message for the client..."
+              rows={4}
+              maxLength={1000}
+              className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 mb-3 text-sm resize-none"
+            />
+            <div className="flex gap-3">
+              <button
+                onClick={handleSubmitResponse}
+                disabled={submittingResponse}
+                className={`flex-1 py-3 rounded-xl font-semibold text-sm disabled:opacity-50 ${
+                  responseStatus === "Rejected" ? "bg-red-600 hover:bg-red-700" : "bg-green-600 hover:bg-green-700"
+                }`}
+              >
+                {submittingResponse ? "Sending..." : `Confirm ${responseStatus}`}
+              </button>
+              <button
+                onClick={closeResponseModal}
+                disabled={submittingResponse}
+                className="flex-1 bg-gray-700 hover:bg-gray-600 py-3 rounded-xl font-semibold text-sm disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* =================================================== */}
       {/* 🎵 REQUEST MEDLEY MODAL                             */}
